@@ -678,6 +678,66 @@ class AstWalker(NodeVisitor):
         # Visit any contained nodes.
         self.generic_visit(node, containingNodes=kwargs['containingNodes'])
 
+
+    def _findEndOfBlock(self, node):
+        """
+        Finds the last code line of the code block of this node.
+
+        The function definition the docstring, and any empty lines
+        are skipped.
+
+        Uses the indentation of the first code line as a reference.
+
+        Then checks all lines below and compares their indentation.
+        If a line has less indentation than the first line AND is
+        not empty this will be the beginning of the next code block.
+
+        """
+        # skip the definition
+        start = node.lineno + 1
+        # skip the docstring
+        if get_docstring(node):
+            while start < len(self.lines):
+                line = self.lines[start]
+                match = AstWalker.__docstrMarkerRE.match(line)
+                if match:
+                    break
+                start += 1
+            # Figure out where our docstring ends.
+            if not AstWalker.__docstrOneLineRE.match(line):
+                # Skip for the special case of a single-line docstring.
+                start += 1
+                while start < len(self.lines):
+                    line = self.lines[start]
+                    if line.find(match.group(2)) >= 0:
+                        break
+                    start += 1
+            start += 1
+        # skip empty lines
+        while start < len(self.lines):
+            match = AstWalker.__indentRE.match(self.lines[start])
+            indentation = match and match.group(1) or ''
+            if indentation is not '':
+                break
+            start += 1
+        # get indentation of start line as reference
+        match = AstWalker.__indentRE.match(self.lines[start])
+        indentation = match and match.group(1) or ''
+        # find end line
+        end = start + 1
+        if end < len(self.lines):
+            while end < len(self.lines):
+                match = AstWalker.__indentRE.match(self.lines[end])
+                line_indentation = match and match.group(1) or indentation
+                if len(line_indentation) < len(indentation):
+                    end -= 1
+                    break
+                end += 1
+        # end now points to the first line of the next block
+        end -= 1
+        return end
+
+
     def visit_FunctionDef(self, node, **kwargs):
         """
         Handles function definitions within code.
@@ -688,15 +748,41 @@ class AstWalker(NodeVisitor):
         if self.options.debug:
             stderr.write("# Function {0.name}{1}".format(node, linesep))
 
-        # if it's a property, rewrite the definition to something Doxygen understands
-        # (We'll use the getter for the documentation)
+        # If it's a property, rewrite the definition to something
+        # Doxygen understands:
+        #           prop_name = property
+        #
+        # - we'll use the docstring of the getter
+        # - we'll ignore the docstring of the setter
+        # - we'll prevent the documentation of both defs by wrapping them
+        #   in `\cond DOXYPYPY_IGNORE` blocks.
         if len(node.decorator_list) > 0:
-            match = AstWalker.__indentRE.match(self.lines[node.lineno-1])
-            indentStr = match and match.group(1) or ''
+            is_property = False
+            is_setter = False
             if "property" == getattr(node.decorator_list[0], "id", None):
-                self.lines[node.lineno - 1] = indentStr + "{} = property".format(node.name) + linesep + indentStr + "## \private" + linesep + self.lines[node.lineno-1]
-            if "setter" == getattr(node.decorator_list[0], "attr", None):
-                self.lines[node.lineno - 1] = indentStr + "## \private" + linesep + self.lines[node.lineno-1]
+                is_property = True
+            elif "setter" == getattr(node.decorator_list[0], "attr", None):
+                is_setter = True
+
+            if is_property or is_setter:
+                # get first and last line
+                first = node.lineno - 1
+                last = self._findEndOfBlock(node)
+                # get indenation
+                match = AstWalker.__indentRE.match(self.lines[first])
+                indentation = match and match.group(1) or ''
+                # inject in front of first line
+                insert = []
+                if is_property:
+                    insert.append('{}{} = property'.format(indentation, node.name))
+                insert.append('{}## \cond DOXYPYPY_IGNORE'.format(indentation))
+                insert.append(self.lines[first])
+                self.lines[first] = linesep.join(insert)
+                # inject after last line
+                insert = []
+                insert.append(self.lines[last])
+                insert.append('{}## \endcond'.format(indentation))
+                self.lines[last] = linesep.join(insert)
 
         # Push either 'interface' or 'class' onto our containing nodes
         # hierarchy so we can keep track of context.  This will let us tell
