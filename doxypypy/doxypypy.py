@@ -507,13 +507,63 @@ class AstWalker(NodeVisitor):
                             defLines[-1] = defLines[-1][:namespaceLoc]
 
 
+        # Makes sure that the doxygen markup gets placed right ABOVE the
+        # definition line, and BELOW any potential decorators.
+        # Otherwise doxygen might stumble over complex decorator syntax
+        # (including keyword argument assignments), like Flasks
+        # @app.route decorator.
+        #
+        # Example:
+        # --------
+        #
+        #       @app.route('/', methods=['GET,'])
+        #       def index():
+        #           """My docstring.
+        #
+        #           """
+        #           return 'Hello World'
+        #
+        #
+        # will now get converted to:
+        # --------------------------
+        #
+        #       @app.route('/', methods=['GET,'])
+        #       ## @brief My docstring.
+        #       #
+        #       def index():
+        #           return 'Hello World'
+        #
+        #
+        # instead of:
+        # ----------
+        #
+        #       ## @brief My docstring.
+        #       #
+        #       @app.route('/', methods=['GET,'])
+        #       def index():
+        #           return 'Hello World'
+        #
+        #
+        allDefLines = defLines
+        declaratorLines = []
+        defLines = []
+        for line in allDefLines:
+            if line.strip().startswith('@'):
+                declaratorLines.append(line)
+            else:
+                defLines.append(line)
+
         # For classes and functions, apply our changes and reverse the
         # order of the declaration and docstring, and for modules just
         # apply our changes.
         if typeName != 'Module':
-            self.lines[startLineNum: endLineNum] = self.docLines + defLines
+            self.lines[startLineNum: endLineNum] = declaratorLines + \
+                                                   self.docLines + \
+                                                   defLines
         else:
-            self.lines[startLineNum: endLineNum] = defLines + self.docLines
+            self.lines[startLineNum: endLineNum] = declaratorLines + \
+                                                   defLines + \
+                                                   self.docLines
 
     @staticmethod
     def _checkMemberName(name):
